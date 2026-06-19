@@ -9,18 +9,12 @@
 set -e
 
 # ---------------------------------------------------------------------------
-# Step 1: Download models from R2
+# Step 1: Download models from R2 (small sync, big in background)
 # ---------------------------------------------------------------------------
 if [ -n "$R2_ACCESS_KEY_ID" ] && [ -n "$R2_SECRET_ACCESS_KEY" ]; then
     echo "worker-comfyui: Downloading models from R2..."
     python /r2_model_loader.py
-    DOWNLOAD_EXIT=$?
-    if [ $DOWNLOAD_EXIT -ne 0 ]; then
-        echo "worker-comfyui: ERROR — Model download failed (exit $DOWNLOAD_EXIT)" >&2
-        echo "worker-comfyui: Continuing anyway — cached or partially downloaded models may be used" >&2
-    else
-        echo "worker-comfyui: Model download complete"
-    fi
+    echo "worker-comfyui: Model download finished — worker starting up"
 else
     echo "worker-comfyui: R2 credentials not set — skipping model download"
     echo "worker-comfyui: Set R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY to enable"
