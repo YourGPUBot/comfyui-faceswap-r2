@@ -9,10 +9,10 @@ FROM runpod/worker-comfyui:5.8.6-base
 RUN pip install boto3
 
 # Copy custom R2 model downloader
-COPY src/r2_model_loader.py /r2_model_loader.py
+COPY r2_model_loader.py /r2_model_loader.py
 
 # Override start.sh to download models from R2 before launching ComfyUI
-COPY src/start-r2.sh /start.sh
+COPY start.sh /start.sh
 RUN chmod +x /start.sh
 
 # Default R2 environment (overridable at endpoint creation)
