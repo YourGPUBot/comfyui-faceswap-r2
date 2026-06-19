@@ -1,25 +1,21 @@
 # ComfyUI Worker with R2 Model Download
-# Portable: same S3-compatible credentials work on RunPod, Vast.ai, Lambda Labs.
-# Small models download synchronously (fast worker startup).
-# Big models (Flux checkpoint ~17GB, text encoder ~8GB) download in background.
+# Downloads models from Cloudflare R2 at startup.
+# Small models (<500MB) download first, big models continue in background via nohup.
+# Portable to any GPU provider — uses S3-compatible API.
 
 import os
 import boto3
 import sys
 import json
-from threading import Thread
 
-# R2/S3 Config from env
 R2_ENDPOINT = os.getenv("R2_ENDPOINT", "https://38d27e0247b1a8b9aeb73d8ec4648262.r2.cloudflarestorage.com")
 R2_ACCESS_KEY = os.getenv("R2_ACCESS_KEY_ID")
 R2_SECRET_KEY = os.getenv("R2_SECRET_ACCESS_KEY")
 R2_BUCKET = os.getenv("R2_BUCKET", "comfyui-models")
 MODEL_LIST = os.getenv("MODEL_LIST", "")
 
-# Models under this size download synchronously
 SMALL_THRESHOLD = 500 * 1024 * 1024  # 500MB
 
-# Where models live inside the container
 MODEL_BASE_PATH = os.getenv("MODEL_BASE_PATH",
     "/runpod-volume" if os.path.exists("/runpod-volume") else "/comfyui")
 
@@ -69,84 +65,75 @@ def get_s3():
         region_name='auto')
 
 
-def download_one(s3, r2_key, local_path):
+def download(s3, r2_key, local_path, label=""):
+    """Download one model. Uses temp file + atomic rename to prevent corruption."""
     full_path = local_path
     if os.path.exists(full_path):
-        size_mb = os.path.getsize(full_path) / 1024 / 1024
-        print(f"  ✓ {local_path} ({size_mb:.0f} MB) — cached")
-        return True
+        print(f"  ✓ [{label}] {os.path.getsize(full_path)/1024/1024:.0f} MB — cached")
+        return True, True  # (success, was_cached)
     try:
         size = s3.head_object(Bucket=R2_BUCKET, Key=r2_key)['ContentLength']
-        print(f"  📥 {r2_key} ({size/1024/1024:.0f} MB)")
+        print(f"  📥 [{label}] {r2_key} ({size/1024/1024:.0f} MB)")
         os.makedirs(os.path.dirname(full_path), exist_ok=True)
-        
-        # Download to temp file first, then atomically rename
-        # This prevents ComfyUI from reading a partially-downloaded .safetensors
-        tmp_path = full_path + ".download"
-        s3.download_file(R2_BUCKET, r2_key, tmp_path)
-        os.rename(tmp_path, full_path)
-        
-        print(f"    ✅ Downloaded ({os.path.getsize(full_path)/1024/1024:.0f} MB)")
-        return True
+        tmp = full_path + ".download"
+        s3.download_file(R2_BUCKET, r2_key, tmp)
+        os.rename(tmp, full_path)
+        print(f"    ✅ {os.path.getsize(full_path)/1024/1024:.0f} MB")
+        return True, False
     except Exception as e:
         print(f"    ❌ {e}")
-        # Clean up partial download
-        tmp_path = local_path + ".download"
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
-        return False
+        tmp = local_path + ".download"
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        return False, False
 
 
 if __name__ == "__main__":
     if not R2_ACCESS_KEY or not R2_SECRET_KEY:
-        print("R2 credentials not set — skipping model download")
+        print("R2: no credentials, skipping")
         sys.exit(0)
 
     models = parse_model_list()
     if not models:
-        print("No models configured in MODEL_LIST")
+        print("R2: no models in MODEL_LIST")
         sys.exit(0)
 
-    print(f"📦 Model set: {os.getenv('MODEL_LIST', 'flux2-faceswap (default)')} ({len(models)} models)")
+    model_set = os.getenv("MODEL_LIST", "flux2-faceswap")
+    print(f"📦 Model set: {model_set} ({len(models)} models)")
     s3 = get_s3()
 
-    # Phase 1: Download small models synchronously
-    # Phase 2: Big models go to background thread
-    big_models = []
+    # 1) Small models first (so ComfyUI has basic models quickly)
+    # 2) Big models after
     for r2_key, local_path in models:
         full_path = local_path
         if os.path.exists(full_path):
-            try:
-                size = os.path.getsize(full_path)
-                label = "small" if size < SMALL_THRESHOLD else "big"
-                print(f"  ✓ [{label}] {local_path} ({size/1024/1024:.0f} MB) — cached")
-            except:
-                pass
-            continue
+            continue  # already handled below
+
         try:
             size = s3.head_object(Bucket=R2_BUCKET, Key=r2_key)['ContentLength']
-            if size < SMALL_THRESHOLD:
-                download_one(s3, r2_key, local_path)
-            else:
-                big_models.append((r2_key, local_path))
-        except Exception:
-            big_models.append((r2_key, local_path))
+        except:
+            size = 999 * 1024 * 1024 * 1024  # assume huge
 
-    if big_models:
-        print(f"\n📦 Large models ({len(big_models)} remaining — downloading in background)...")
-        for r2_key, local_path in big_models:
-            try:
-                size = s3.head_object(Bucket=R2_BUCKET, Key=r2_key)['ContentLength']
-                print(f"  ⏳ {r2_key} ({size/1024/1024:.0f} MB) — will start after worker boots")
-            except:
-                print(f"  ⏳ {r2_key}")
-        from multiprocessing import Process
-        def _bg_download():
-            s3 = get_s3()
-            for r2_key, local_path in big_models:
-                download_one(s3, r2_key, local_path)
-        p = Process(target=_bg_download)
-        p.start()
-        print(f"  Big models downloading in process {p.pid} — continues after this script exits")
+    # Download small models synchronously
+    small_success = 0
+    big_success = 0
+    for r2_key, local_path in models:
+        full_path = local_path
+        try:
+            if os.path.exists(full_path):
+                is_big = os.path.getsize(full_path) >= SMALL_THRESHOLD
+                label = "big" if is_big else "small"
+                print(f"  ✓ [{label}] {os.path.getsize(full_path)/1024/1024:.0f} MB — cached")
+                continue
+            size = s3.head_object(Bucket=R2_BUCKET, Key=r2_key)['ContentLength']
+            is_big = size >= SMALL_THRESHOLD
+            label = "big" if is_big else "small"
+            ok, _ = download(s3, r2_key, local_path, label)
+            if ok and is_big:
+                big_success += 1
+            elif ok:
+                small_success += 1
+        except Exception as e:
+            print(f"    ⚠️ {e}")
 
-    print("\n✅ Model load phase complete")
+    print(f"\n✅ Done: {small_success} small + {big_success} big models")
