@@ -1,101 +1,38 @@
 #!/usr/bin/env bash
 #
-# RunPod ComfyUI start.sh — R2 Model Download Variant
+# RunPod ComfyUI start.sh — R2 Model Download
+# Downloads models from R2, then launches ComfyUI + RunPod handler.
 #
-# Downloads face-swap models from Cloudflare R2 before launching ComfyUI.
-# Falls through to the official ComfyUI startup sequence.
-#
-
-set -e
+set -o pipefail
 
 # ---------------------------------------------------------------------------
-# Step 1: Download models from R2 (proritized: small files first, capped at 60s)
+# Step 1: Download models from R2 (small files first, 120s total cap)
 # ---------------------------------------------------------------------------
 if [ -n "$R2_ACCESS_KEY_ID" ] && [ -n "$R2_SECRET_ACCESS_KEY" ]; then
-    echo "worker-comfyui: Downloading models from R2 (small first, 60s cap)..."
-    timeout 120 python /r2_model_loader.py || true
-    echo "worker-comfyui: Model stage done — starting ComfyUI"
-else
-    echo "worker-comfyui: R2 credentials not set — skipping model download"
+    echo "worker-comfyui: Downloading models from R2..."
+    timeout 120 python /r2_model_loader.py || echo "worker-comfyui: Model download timeout or error — continuing anyway"
 fi
 
 # ---------------------------------------------------------------------------
-# Step 2: Standard ComfyUI startup (from official start.sh)
+# Step 2: Standard ComfyUI startup
 # ---------------------------------------------------------------------------
-
-# Start SSH server if PUBLIC_KEY is set (enables remote access and dev-sync.sh)
-if [ -n "$PUBLIC_KEY" ]; then
-    mkdir -p ~/.ssh
-    echo "$PUBLIC_KEY" > ~/.ssh/authorized_keys
-    chmod 700 ~/.ssh
-    chmod 600 ~/.ssh/authorized_keys
-
-    # Generate host keys if they don't exist (removed during image build for security)
-    for key_type in rsa ecdsa ed25519; do
-        key_file="/etc/ssh/ssh_host_${key_type}_key"
-        if [ ! -f "$key_file" ]; then
-            ssh-keygen -t "$key_type" -f "$key_file" -q -N ''
-        fi
-    done
-
-    service ssh start && echo "worker-comfyui: SSH server started" || echo "worker-comfyui: SSH server could not be started" >&2
-fi
 
 # Use libtcmalloc for better memory management
 TCMALLOC="$(ldconfig -p | grep -Po "libtcmalloc.so.\d" | head -n 1)"
 export LD_PRELOAD="${TCMALLOC}"
 
-# ---------------------------------------------------------------------------
-# GPU pre-flight check
-# Verify that the GPU is accessible before starting ComfyUI. If PyTorch
-# cannot initialize CUDA the worker will never be able to process jobs,
-# so we fail fast with an actionable error message.
-# ---------------------------------------------------------------------------
-echo "worker-comfyui: Checking GPU availability..."
-if ! GPU_CHECK=$(python3 -c "
-import torch
-try:
-    torch.cuda.init()
-    name = torch.cuda.get_device_name(0)
-    cap = torch.cuda.get_device_capability(0)
-    _ = (torch.zeros(8, device='cuda') + 1).sum().item()
-    torch.cuda.synchronize()
-    print(f'OK: {name} (sm_{cap[0]}{cap[1]}), torch {torch.__version__}, cuda {torch.version.cuda}')
-except Exception as e:
-    print(f'FAIL: {e}')
-    exit(1)
-" 2>&1); then
-    echo "worker-comfyui: GPU is not available or incompatible with this PyTorch build:"
-    echo "worker-comfyui: $GPU_CHECK"
-    echo "worker-comfyui: A 'no kernel image is available' error means this torch build"
-    echo "worker-comfyui: lacks kernels for this GPU. Otherwise the GPU may not be"
-    echo "worker-comfyui: properly initialized — please contact RunPod support."
-    exit 1
-fi
-echo "worker-comfyui: GPU available — $GPU_CHECK"
-
-# Ensure ComfyUI-Manager runs in offline network mode inside the container
-comfy-manager-set-mode offline || echo "worker-comfyui - Could not set ComfyUI-Manager network_mode" >&2
+# Ensure ComfyUI-Manager offline mode
+comfy-manager-set-mode offline 2>/dev/null || true
 
 echo "worker-comfyui: Starting ComfyUI"
 
-# Allow operators to tweak verbosity; default is DEBUG.
 : "${COMFY_LOG_LEVEL:=DEBUG}"
-
-# PID file used by the handler to detect if ComfyUI is still running
 COMFY_PID_FILE="/tmp/comfyui.pid"
 
-# Serve the API and don't shutdown the container
-if [ "$SERVE_API_LOCALLY" == "true" ]; then
-    python -u /comfyui/main.py --disable-auto-launch --disable-metadata --listen --verbose "${COMFY_LOG_LEVEL}" --log-stdout &
-    echo $! > "$COMFY_PID_FILE"
+# Start ComfyUI in background, handler in foreground
+python -u /comfyui/main.py --disable-auto-launch --disable-metadata \
+    --verbose "${COMFY_LOG_LEVEL}" --log-stdout &
+echo $! > "$COMFY_PID_FILE"
 
-    echo "worker-comfyui: Starting RunPod Handler"
-    python -u /handler.py --rp_serve_api --rp_api_host=0.0.0.0
-else
-    python -u /comfyui/main.py --disable-auto-launch --disable-metadata --verbose "${COMFY_LOG_LEVEL}" --log-stdout &
-    echo $! > "$COMFY_PID_FILE"
-
-    echo "worker-comfyui: Starting RunPod Handler"
-    python -u /handler.py
-fi
+echo "worker-comfyui: Starting RunPod Handler"
+exec python -u /handler.py
