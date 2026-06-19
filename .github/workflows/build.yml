@@ -2,11 +2,12 @@ name: Build and Push Docker Image
 
 on:
   push:
-    branches: [main]
+    branches: [master]
     paths:
       - 'Dockerfile'
       - 'start.sh'
       - 'r2_model_loader.py'
+  workflow_dispatch:
 
 jobs:
   build:
