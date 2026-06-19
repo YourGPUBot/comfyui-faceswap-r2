@@ -9,15 +9,14 @@
 set -e
 
 # ---------------------------------------------------------------------------
-# Step 1: Fire-and-forget model download from R2 (never blocks startup)
+# Step 1: Download models from R2 (proritized: small files first, capped at 60s)
 # ---------------------------------------------------------------------------
 if [ -n "$R2_ACCESS_KEY_ID" ] && [ -n "$R2_SECRET_ACCESS_KEY" ]; then
-    echo "worker-comfyui: Starting R2 model download in background..."
-    nohup python /r2_model_loader.py > /tmp/r2-download.log 2>&1 &
-    echo "worker-comfyui: PID $! — ComfyUI starts immediately, models stream in"
+    echo "worker-comfyui: Downloading models from R2 (small first, 60s cap)..."
+    timeout 120 python /r2_model_loader.py || true
+    echo "worker-comfyui: Model stage done — starting ComfyUI"
 else
     echo "worker-comfyui: R2 credentials not set — skipping model download"
-    echo "worker-comfyui: Set R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY to enable"
 fi
 
 # ---------------------------------------------------------------------------

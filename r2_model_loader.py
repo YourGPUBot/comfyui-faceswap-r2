@@ -130,9 +130,13 @@ if __name__ == "__main__":
                 print(f"  ⏳ {r2_key} ({size/1024/1024:.0f} MB) — will start after worker boots")
             except:
                 print(f"  ⏳ {r2_key}")
-        t = Thread(target=lambda: [download_one(get_s3(), k, p) for k, p in big_models],
-                   daemon=True)
-        t.start()
-        print("  Worker startup continues — models stream in as background download finishes")
+        from multiprocessing import Process
+        def _bg_download():
+            s3 = get_s3()
+            for r2_key, local_path in big_models:
+                download_one(s3, r2_key, local_path)
+        p = Process(target=_bg_download)
+        p.start()
+        print(f"  Big models downloading in process {p.pid} — continues after this script exits")
 
     print("\n✅ Model load phase complete")
