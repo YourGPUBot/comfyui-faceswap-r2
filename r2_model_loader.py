@@ -79,11 +79,21 @@ def download_one(s3, r2_key, local_path):
         size = s3.head_object(Bucket=R2_BUCKET, Key=r2_key)['ContentLength']
         print(f"  📥 {r2_key} ({size/1024/1024:.0f} MB)")
         os.makedirs(os.path.dirname(full_path), exist_ok=True)
-        s3.download_file(R2_BUCKET, r2_key, full_path)
+        
+        # Download to temp file first, then atomically rename
+        # This prevents ComfyUI from reading a partially-downloaded .safetensors
+        tmp_path = full_path + ".download"
+        s3.download_file(R2_BUCKET, r2_key, tmp_path)
+        os.rename(tmp_path, full_path)
+        
         print(f"    ✅ Downloaded ({os.path.getsize(full_path)/1024/1024:.0f} MB)")
         return True
     except Exception as e:
         print(f"    ❌ {e}")
+        # Clean up partial download
+        tmp_path = local_path + ".download"
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
         return False
 
 

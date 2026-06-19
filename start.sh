@@ -10,7 +10,7 @@ set -o pipefail
 # ---------------------------------------------------------------------------
 if [ -n "$R2_ACCESS_KEY_ID" ] && [ -n "$R2_SECRET_ACCESS_KEY" ]; then
     echo "worker-comfyui: Downloading models from R2..."
-    timeout 120 python /r2_model_loader.py || echo "worker-comfyui: Model download timeout or error — continuing anyway"
+    python /r2_model_loader.py
 fi
 
 # ---------------------------------------------------------------------------
