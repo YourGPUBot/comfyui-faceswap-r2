@@ -1,0 +1,120 @@
+{
+  "id": "faceswap-flux-klein-runpod",
+  "revision": 0,
+  "last_node_id": 189,
+  "last_link_id": 319,
+  "title": "Face Swap - Flux2 Klein 9B",
+  "description": "Face swap using Flux2-Klein-9B with BFS LoRA. Inputs: source_image, target_image. Output: swapped_image.",
+  "inputs": {
+    "source_image": {
+      "type": "image",
+      "description": "Base image - keep lighting/environment, replace head"
+    },
+    "target_image": {
+      "type": "image", 
+      "description": "Head donor - extract hair/eyes/nose from this"
+    }
+  },
+  "outputs": {
+    "swapped_image": {
+      "type": "image"
+    }
+  },
+  "workflow": {
+    "115": {
+      "class_type": "CLIPLoader",
+      "inputs": {
+        "clip_name": "qwen_3_8b_fp8mixed.safetensors",
+        "type": "flux2",
+        "device": "default"
+      }
+    },
+    "117": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": ["115", 0],
+        "text": "head_swap: start with Picture 1 as the base image, keeping its lighting, environment, and background. remove the head from Picture 1 completely and replace it with the head from Picture 2, strictly preserving the hair, eye color, nose structure of Picture 2. copy the direction of the eye, head rotation, micro expressions from Picture 1, high quality, sharp details, 4k."
+      }
+    },
+    "118": {
+      "class_type": "UNETLoader",
+      "inputs": {
+        "model_name": "flux-2-klein-9b.safetensors",
+        "weight_dtype": "default"
+      }
+    },
+    "133": {
+      "class_type": "LoraLoaderModelOnly",
+      "inputs": {
+        "model": ["118", 0],
+        "lora_name": "bfs_head_v1_flux-klein-9b_step3750_rank64.safetensors",
+        "strength_model": 1.0
+      }
+    },
+    "111": {
+      "class_type": "VAELoader",
+      "inputs": {
+        "vae_name": "flux2-vae.safetensors"
+      }
+    },
+    "119": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": ["115", 0],
+        "text": "bad quality, noise, blurry, worst quality, low resolution, blur, distortion, unnatural blending, cartoon, illustration, painting"
+      }
+    },
+    "76": {
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": "{{source_image}}"
+      }
+    },
+    "81": {
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": "{{target_image}}"
+      }
+    },
+    "KSampler": {
+      "class_type": "KSampler",
+      "inputs": {
+        "model": ["133", 0],
+        "positive": ["117", 0],
+        "negative": ["119", 0],
+        "latent_image": ["VAEEncode", 0],
+        "seed": 12345,
+        "control_after_generate": "randomize",
+        "steps": 20,
+        "cfg": 1.0,
+        "sampler_name": "euler",
+        "scheduler": "normal",
+        "denoise": 1.0
+      }
+    },
+    "VAEEncode": {
+      "class_type": "VAEEncode",
+      "inputs": {
+        "pixels": ["76", 0],
+        "vae": ["111", 0]
+      }
+    },
+    "VAEDecode": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": ["KSampler", 0],
+        "vae": ["111", 0]
+      }
+    },
+    "SaveImage": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "images": ["VAEDecode", 0],
+        "filename_prefix": "faceswap_output"
+      },
+      "_meta": {
+        "title": "Save Output"
+      }
+    }
+  }
+}
