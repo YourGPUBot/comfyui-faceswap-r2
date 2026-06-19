@@ -1,12 +1,16 @@
-# ComfyUI Worker with R2 Model Download
-# Downloads models from Cloudflare R2 at startup.
-# Small models (<500MB) download first, big models continue in background via nohup.
-# Portable to any GPU provider — uses S3-compatible API.
+# ComfyUI R2 Model Downloader
+# Uses only Python standard library — no pip dependencies needed.
+# Downloads models from Cloudflare R2 (S3-compatible) at worker startup.
+# Atomic rename to prevent ComfyUI reading partial files.
 
 import os
-import boto3
 import sys
 import json
+import hashlib
+import hmac
+import urllib.request
+import time
+import xml.etree.ElementTree as ET
 
 R2_ENDPOINT = os.getenv("R2_ENDPOINT", "https://38d27e0247b1a8b9aeb73d8ec4648262.r2.cloudflarestorage.com")
 R2_ACCESS_KEY = os.getenv("R2_ACCESS_KEY_ID")
@@ -14,10 +18,10 @@ R2_SECRET_KEY = os.getenv("R2_SECRET_ACCESS_KEY")
 R2_BUCKET = os.getenv("R2_BUCKET", "comfyui-models")
 MODEL_LIST = os.getenv("MODEL_LIST", "")
 
-SMALL_THRESHOLD = 500 * 1024 * 1024  # 500MB
-
 MODEL_BASE_PATH = os.getenv("MODEL_BASE_PATH",
     "/runpod-volume" if os.path.exists("/runpod-volume") else "/comfyui")
+
+SMALL_THRESHOLD = 500 * 1024 * 1024
 
 MODEL_SETS = {
     "flux2-faceswap": [
@@ -57,40 +61,145 @@ def parse_model_list():
     return models
 
 
-def get_s3():
-    return boto3.client('s3',
-        endpoint_url=R2_ENDPOINT,
-        aws_access_key_id=R2_ACCESS_KEY,
-        aws_secret_access_key=R2_SECRET_KEY,
-        region_name='auto')
+def sign_v4(key, msg):
+    return hmac.new(key, msg.encode("utf-8"), hashlib.sha256).digest()
 
 
-def download(s3, r2_key, local_path, label=""):
-    """Download one model. Uses temp file + atomic rename to prevent corruption."""
+def get_s3_url(r2_key):
+    """Build S3-compatible URL for the object."""
+    endpoint = R2_ENDPOINT.rstrip("/")
+    return f"{endpoint}/{R2_BUCKET}/{r2_key}"
+
+
+def get_s3_head(r2_key):
+    """Get object metadata via S3 HEAD request with AWS Signature V4."""
+    endpoint = R2_ENDPOINT.rstrip("/")
+    host = endpoint.replace("https://", "").replace("http://", "")
+    path = f"/{R2_BUCKET}/{r2_key}"
+    url = f"{endpoint}{path}"
+
+    # AWS Signature V4
+    service = "s3"
+    region = "auto"
+    now = time.gmtime()
+    amz_date = time.strftime("%Y%m%dT%H%M%SZ", now)
+    date_stamp = time.strftime("%Y%m%d", now)
+
+    # Create canonical request
+    method = "HEAD"
+    canonical_uri = path
+    canonical_querystring = ""
+    canonical_headers = f"host:{host}\nx-amz-content-sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nx-amz-date:{amz_date}\n"
+    signed_headers = "host;x-amz-content-sha256;x-amz-date"
+    payload_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    canonical_request = f"{method}\n{canonical_uri}\n{canonical_querystring}\n{canonical_headers}\n{signed_headers}\n{payload_hash}"
+
+    # Create string to sign
+    algorithm = "AWS4-HMAC-SHA256"
+    credential_scope = f"{date_stamp}/{region}/{service}/aws4_request"
+    cr_hash = hashlib.sha256(canonical_request.encode("utf-8")).hexdigest()
+    string_to_sign = f"{algorithm}\n{amz_date}\n{credential_scope}\n{cr_hash}"
+
+    # Calculate signature
+    k_date = sign_v4(R2_SECRET_KEY.encode("utf-8"), date_stamp)
+    k_region = sign_v4(k_date, region)
+    k_service = sign_v4(k_region, service)
+    k_signing = sign_v4(k_service, "aws4_request")
+    signature = hmac.new(k_signing, string_to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
+
+    authorization = f"{algorithm} Credential={R2_ACCESS_KEY}/{credential_scope}, SignedHeaders={signed_headers}, Signature={signature}"
+
+    req = urllib.request.Request(url, method="HEAD")
+    req.add_header("x-amz-content-sha256", payload_hash)
+    req.add_header("x-amz-date", amz_date)
+    req.add_header("Authorization", authorization)
+
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return int(resp.headers.get("Content-Length", 0))
+    except Exception as e:
+        print(f"    ⚠️ HEAD failed: {e}")
+        return None
+
+
+def download_file(r2_key, local_path):
+    """Download one model file using S3 GET with AWS Signature V4. Atomic rename."""
     full_path = local_path
     if os.path.exists(full_path):
-        print(f"  ✓ [{label}] {os.path.getsize(full_path)/1024/1024:.0f} MB — cached")
-        return True, True  # (success, was_cached)
+        size_mb = os.path.getsize(full_path) / 1024 / 1024
+        print(f"  ✓ {size_mb:.0f} MB — cached")
+        return True
+
+    endpoint = R2_ENDPOINT.rstrip("/")
+    host = endpoint.replace("https://", "").replace("http://", "")
+    path = f"/{R2_BUCKET}/{r2_key}"
+    url = f"{endpoint}{path}"
+
+    service = "s3"
+    region = "auto"
+    now = time.gmtime()
+    amz_date = time.strftime("%Y%m%dT%H%M%SZ", now)
+    date_stamp = time.strftime("%Y%m%d", now)
+    payload_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+    method = "GET"
+    canonical_uri = path
+    canonical_querystring = ""
+    canonical_headers = f"host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{amz_date}\n"
+    signed_headers = "host;x-amz-content-sha256;x-amz-date"
+    canonical_request = f"{method}\n{canonical_uri}\n{canonical_querystring}\n{canonical_headers}\n{signed_headers}\n{payload_hash}"
+
+    algorithm = "AWS4-HMAC-SHA256"
+    credential_scope = f"{date_stamp}/{region}/{service}/aws4_request"
+    cr_hash = hashlib.sha256(canonical_request.encode("utf-8")).hexdigest()
+    string_to_sign = f"{algorithm}\n{amz_date}\n{credential_scope}\n{cr_hash}"
+
+    k_date = sign_v4(R2_SECRET_KEY.encode("utf-8"), date_stamp)
+    k_region = sign_v4(k_date, region)
+    k_service = sign_v4(k_region, service)
+    k_signing = sign_v4(k_service, "aws4_request")
+    signature = hmac.new(k_signing, string_to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
+    authorization = f"{algorithm} Credential={R2_ACCESS_KEY}/{credential_scope}, SignedHeaders={signed_headers}, Signature={signature}"
+
+    os.makedirs(os.path.dirname(full_path), exist_ok=True)
+    tmp_path = full_path + ".download"
+
     try:
-        size = s3.head_object(Bucket=R2_BUCKET, Key=r2_key)['ContentLength']
-        print(f"  📥 [{label}] {r2_key} ({size/1024/1024:.0f} MB)")
-        os.makedirs(os.path.dirname(full_path), exist_ok=True)
-        tmp = full_path + ".download"
-        s3.download_file(R2_BUCKET, r2_key, tmp)
-        os.rename(tmp, full_path)
-        print(f"    ✅ {os.path.getsize(full_path)/1024/1024:.0f} MB")
-        return True, False
+        req = urllib.request.Request(url, method="GET")
+        req.add_header("x-amz-content-sha256", payload_hash)
+        req.add_header("x-amz-date", amz_date)
+        req.add_header("Authorization", authorization)
+
+        print(f"  📥 {r2_key}")
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            total = int(resp.headers.get("Content-Length", 0))
+            downloaded = 0
+            chunk_size = 8192
+            with open(tmp_path, "wb") as f:
+                while True:
+                    chunk = resp.read(chunk_size)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total > 0:
+                        pct = int(downloaded / total * 100)
+                        print(f"    {pct}%", end="\r")
+        
+        os.rename(tmp_path, full_path)
+        mb = os.path.getsize(full_path) / 1024 / 1024
+        print(f"    ✅ {mb:.0f} MB")
+        return True
     except Exception as e:
         print(f"    ❌ {e}")
-        tmp = local_path + ".download"
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-        return False, False
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        return False
 
 
 if __name__ == "__main__":
     if not R2_ACCESS_KEY or not R2_SECRET_KEY:
-        print("R2: no credentials, skipping")
+        print("R2: no credentials set")
         sys.exit(0)
 
     models = parse_model_list()
@@ -98,31 +207,15 @@ if __name__ == "__main__":
         print("R2: no models in MODEL_LIST")
         sys.exit(0)
 
-    model_set = os.getenv("MODEL_LIST", "flux2-faceswap")
-    print(f"📦 Model set: {model_set} ({len(models)} models)")
-    s3 = get_s3()
+    print(f"📦 Model set: {os.getenv('MODEL_LIST', 'flux2-faceswap')} ({len(models)} models)")
 
-    # Download all models. Small ones will finish quickly, big ones take time.
-    # Since this runs via nohup in the background, all download while ComfyUI starts.
-    small_success = 0
-    big_success = 0
+    successes = 0
+    failures = 0
     for r2_key, local_path in models:
-        full_path = local_path
-        try:
-            if os.path.exists(full_path):
-                is_big = os.path.getsize(full_path) >= SMALL_THRESHOLD
-                label = "big" if is_big else "small"
-                print(f"  ✓ [{label}] {os.path.getsize(full_path)/1024/1024:.0f} MB — cached")
-                continue
-            size = s3.head_object(Bucket=R2_BUCKET, Key=r2_key)['ContentLength']
-            is_big = size >= SMALL_THRESHOLD
-            label = "big" if is_big else "small"
-            ok, _ = download(s3, r2_key, local_path, label)
-            if ok and is_big:
-                big_success += 1
-            elif ok:
-                small_success += 1
-        except Exception as e:
-            print(f"    ⚠️ {e}")
+        ok = download_file(r2_key, local_path)
+        if ok:
+            successes += 1
+        else:
+            failures += 1
 
-    print(f"\n✅ Done: {small_success} small + {big_success} big models")
+    print(f"\n✅ {successes} downloaded, {failures} failed")
