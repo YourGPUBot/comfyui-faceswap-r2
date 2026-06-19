@@ -102,19 +102,8 @@ if __name__ == "__main__":
     print(f"📦 Model set: {model_set} ({len(models)} models)")
     s3 = get_s3()
 
-    # 1) Small models first (so ComfyUI has basic models quickly)
-    # 2) Big models after
-    for r2_key, local_path in models:
-        full_path = local_path
-        if os.path.exists(full_path):
-            continue  # already handled below
-
-        try:
-            size = s3.head_object(Bucket=R2_BUCKET, Key=r2_key)['ContentLength']
-        except:
-            size = 999 * 1024 * 1024 * 1024  # assume huge
-
-    # Download small models synchronously
+    # Download all models. Small ones will finish quickly, big ones take time.
+    # Since this runs via nohup in the background, all download while ComfyUI starts.
     small_success = 0
     big_success = 0
     for r2_key, local_path in models:
