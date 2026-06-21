@@ -1,9 +1,18 @@
 #!/usr/bin/env bash
 
-# R2 model download (background, never blocks startup)
+# R2 model download — synchronous.
+# Models MUST be present before ComfyUI starts, otherwise the handler registers
+# as ready but workflow execution fails with missing models.
+# Download is ~26GB and takes 3-10 minutes on a 50MB/s connection.
 if [ -n "$R2_ACCESS_KEY_ID" ] && [ -n "$R2_SECRET_ACCESS_KEY" ]; then
-    echo "worker-comfyui: Starting R2 model download..."
-    nohup python /r2_model_loader.py > /tmp/r2-download.log 2>&1 &
+    echo "worker-comfyui: Downloading models from R2 (26GB, this may take several minutes)..."
+    python /r2_model_loader.py 2>&1 | tee /tmp/r2-download.log
+    R2_EXIT_CODE=$?
+    if [ $R2_EXIT_CODE -ne 0 ]; then
+        echo "worker-comfyui: WARNING — R2 download exited with code $R2_EXIT_CODE. Continuing anyway."
+    else
+        echo "worker-comfyui: Model download complete."
+    fi
 fi
 
 # Start SSH server if PUBLIC_KEY is set (enables remote access and dev-sync.sh)
