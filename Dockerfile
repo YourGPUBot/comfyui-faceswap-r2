@@ -6,10 +6,15 @@
 # Base: Official worker-comfyui 5.8.6 with ComfyUI, handler, FlashBoot support
 FROM runpod/worker-comfyui:5.8.6-base
 
+# Upgrade runpod SDK — the base image pins runpod~=1.7.12 which has known
+# serverless worker routing bugs (jobs stay IN_QUEUE despite idle workers).
+# Latest runpod SDK (>1.9.0) includes critical fixes for job dispatch.
+RUN uv pip install "runpod>=1.9.1"
+
 # Copy custom R2 model downloader (uses requests — already in base image)
 COPY r2_model_loader.py /r2_model_loader.py
 
-# Override start.sh — adds one nohup line, rest is identical to official
+# Override start.sh — adds model download, GPU check, SSH, same handler
 COPY start.sh /start.sh
 RUN chmod +x /start.sh
 
