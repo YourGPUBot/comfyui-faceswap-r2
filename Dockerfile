@@ -1,15 +1,9 @@
-# RunPod ComfyUI Worker — R2 Model Download Variant
-# Portable: models live in Cloudflare R2, fetched at startup.
-# Uses CUDA 12.5 for best RunPod compatibility (driver >= 535).
-# Upstream uses CUDA 12.6+ which fails with "cuda>=12.6" driver error.
-
 ARG BASE_IMAGE=nvidia/cuda:12.5.1-runtime-ubuntu24.04
 FROM ${BASE_IMAGE} AS base
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PIP_PREFER_BINARY=1
 ENV PYTHONUNBUFFERED=1
-ENV CMAKE_BUILD_PARALLEL_LEVEL=8
 
 RUN apt-get update && apt-get install -y \
     python3.12 python3.12-venv python3-pip \
@@ -18,29 +12,12 @@ RUN apt-get update && apt-get install -y \
     && ln -sf /usr/bin/python3.12 /usr/bin/python \
     && rm -rf /var/lib/apt/lists/*
 
-# Install uv
-RUN wget -qO- https://astral.sh/uv/install.sh | sh \
-    && ln -s /root/.local/bin/uv /usr/local/bin/uv \
-    && ln -s /root/.local/bin/uvx /usr/local/bin/uvx \
-    && uv venv /opt/venv
-ENV PATH="/opt/venv/bin:${PATH}"
-
-# Install comfy-cli and ComfyUI
-RUN uv pip install comfy-cli pip setuptools wheel
+RUN pip install --upgrade pip setuptools wheel
+RUN pip install comfy-cli
 RUN /usr/bin/yes | comfy --workspace /comfyui install --nvidia
-
-# Mirror ComfyUI deps into launch venv
-RUN uv pip install -r /comfyui/requirements.txt \
-    && for r in /comfyui/custom_nodes/*/requirements.txt; do \
-        [ -f "$r" ] && uv pip install -r "$r"; done
-
-# Install runpod SDK and other deps
-RUN uv pip install runpod requests websocket-client
+RUN pip install runpod requests websocket-client
 RUN comfy --workspace /comfyui node install ComfyUI-Manager
-
-WORKDIR /comfyui
-COPY src/extra_model_paths.yaml ./
-WORKDIR /
+COPY src/extra_model_paths.yaml /comfyui/
 
 COPY handler.py /handler.py
 COPY r2_model_loader.py /r2_model_loader.py
