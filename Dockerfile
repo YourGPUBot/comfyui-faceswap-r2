@@ -4,7 +4,7 @@
 # Works on RunPod, Vast.ai, Lambda Labs, or anywhere.
 #
 # Base: Official worker-comfyui 5.8.6 with ComfyUI, handler, FlashBoot support
-FROM runpod/worker-comfyui:5.8.6-base
+FROM runpod/worker-comfyui:5.6.0-base
 
 # Upgrade runpod SDK — the base image pins runpod~=1.7.12 which has known
 # serverless worker routing bugs (jobs stay IN_QUEUE despite idle workers).
