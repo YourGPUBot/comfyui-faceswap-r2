@@ -7,7 +7,7 @@
 # Upstream runpod/worker-comfyui images all use CUDA 12.6+ which requires
 # newer host drivers than most RunPod serverless nodes provide.
 
-ARG BASE_IMAGE=nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
+ARG BASE_IMAGE=nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 FROM ${BASE_IMAGE} AS base
 
 ENV DEBIAN_FRONTEND=noninteractive
