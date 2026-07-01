@@ -61,6 +61,7 @@ COPY src/extra_model_paths.yaml ./
 WORKDIR /
 
 # Copy handler, scripts, and custom files
+COPY network_volume.py /network_volume.py
 COPY handler.py /handler.py
 COPY r2_model_loader.py /r2_model_loader.py
 COPY start.sh /start.sh
