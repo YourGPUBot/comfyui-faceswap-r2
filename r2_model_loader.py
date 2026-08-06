@@ -104,7 +104,9 @@ def get_s3_head(r2_key):
     string_to_sign = f"{algorithm}\n{amz_date}\n{credential_scope}\n{cr_hash}"
 
     # Calculate signature
-    k_date = sign_v4(R2_SECRET_KEY.encode("utf-8"), date_stamp)
+    # AWS Signature V4 starts the key-derivation chain with the literal
+    # ``AWS4`` prefix. Without it, R2 correctly rejects every HEAD/GET as 403.
+    k_date = sign_v4(("AWS4" + R2_SECRET_KEY).encode("utf-8"), date_stamp)
     k_region = sign_v4(k_date, region)
     k_service = sign_v4(k_region, service)
     k_signing = sign_v4(k_service, "aws4_request")
@@ -157,7 +159,7 @@ def download_file(r2_key, local_path):
     cr_hash = hashlib.sha256(canonical_request.encode("utf-8")).hexdigest()
     string_to_sign = f"{algorithm}\n{amz_date}\n{credential_scope}\n{cr_hash}"
 
-    k_date = sign_v4(R2_SECRET_KEY.encode("utf-8"), date_stamp)
+    k_date = sign_v4(("AWS4" + R2_SECRET_KEY).encode("utf-8"), date_stamp)
     k_region = sign_v4(k_date, region)
     k_service = sign_v4(k_region, service)
     k_signing = sign_v4(k_service, "aws4_request")
