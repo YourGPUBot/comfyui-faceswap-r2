@@ -28,7 +28,10 @@ MODEL_SETS = {
         ("unet/flux-2-klein-9b.safetensors", f"{MODEL_BASE_PATH}/models/diffusion_models/flux-2-klein-9b.safetensors"),
         ("flux2-faceswap/vae/flux2-vae.safetensors", f"{MODEL_BASE_PATH}/models/vae/flux2-vae.safetensors"),
         ("text_encoders/qwen_3_8b_fp8mixed.safetensors", f"{MODEL_BASE_PATH}/models/text_encoders/qwen_3_8b_fp8mixed.safetensors"),
-        ("loras/bfs_head_v1_flux-klein_9b_step3750_rank64.safetensors", f"{MODEL_BASE_PATH}/models/loras/bfs_head_v1_flux-klein_9b_step3750_rank64.safetensors"),
+        # The R2 object uses an underscore, while the exported ComfyUI workflow
+        # references the local file with a hyphen. Keep the remote key intact
+        # and materialize the exact filename the workflow loads.
+        ("loras/bfs_head_v1_flux-klein_9b_step3750_rank64.safetensors", f"{MODEL_BASE_PATH}/models/loras/bfs_head_v1_flux-klein-9b_step3750_rank64.safetensors"),
     ],
     "sdxl": [
         ("checkpoints/sd_xl_base_1.0.safetensors", f"{MODEL_BASE_PATH}/models/checkpoints/sd_xl_base_1.0.safetensors"),
@@ -219,3 +222,5 @@ if __name__ == "__main__":
             failures += 1
 
     print(f"\n✅ {successes} downloaded, {failures} failed")
+    if failures:
+        sys.exit(1)

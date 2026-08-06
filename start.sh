@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
 
+set -o pipefail
+
+# The active RunPod template historically used MODEL_SET while the loader
+# consumes MODEL_LIST. Honour either name so the template actually selects the
+# requested model bundle.
+export MODEL_LIST="${MODEL_LIST:-${MODEL_SET:-flux2-faceswap}}"
+
 # R2 model download — synchronous.
 # Models MUST be present before ComfyUI starts, otherwise the handler registers
 # as ready but workflow execution fails with missing models.
@@ -9,7 +16,8 @@ if [ -n "$R2_ACCESS_KEY_ID" ] && [ -n "$R2_SECRET_ACCESS_KEY" ]; then
     python /r2_model_loader.py 2>&1 | tee /tmp/r2-download.log
     R2_EXIT_CODE=$?
     if [ $R2_EXIT_CODE -ne 0 ]; then
-        echo "worker-comfyui: WARNING — R2 download exited with code $R2_EXIT_CODE. Continuing anyway."
+        echo "worker-comfyui: ERROR — R2 download exited with code $R2_EXIT_CODE. Refusing to register an unusable paid worker."
+        exit "$R2_EXIT_CODE"
     else
         echo "worker-comfyui: Model download complete."
     fi
